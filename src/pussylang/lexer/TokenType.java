@@ -1,33 +1,39 @@
 package pussylang.lexer;
 
 public enum TokenType {
-    //single char token
-    LEFT_PAREN, RIGHT_PAREN,
-    PLUS, MINUS, STAR, SLASH,
-    SEMICOLON, COMMA,
 
-    //1 or 2 char tokens
+    LEFT_PAREN, RIGHT_PAREN,
+    LEFT_BRACE, RIGHT_BRACE,
+    PLUS, MINUS, STAR, SLASH, PERCENT,
+    SEMICOLON, COMMA, DOT,
+
+
     EQUAL, EQUAL_EQUAL,
     BANG, BANG_EQUAL,
     GREATER, GREATER_EQUAL,
     LESS, LESS_EQUAL,
+    AND_AND, OR_OR,
 
-    //literals
+
     IDENTIFIER,
     NUMBER,
+    HEX_NUMBER,
     STRING,
+    BYTE_STRING,
 
-    //keywords
-    PRINT,
-    VAR,
-    IF,
-    ELSE,
-    WHILE,
-    TRUE,
-    FALSE,
-    NULL,
 
-    //special shit
-    EOF,
-    ERROR
+    PRINT, VAR, IF, ELSE, WHILE,
+    FUNC, RETURN,
+    TRUE, FALSE, NULL,
+
+
+    ALLOC,
+    FREE,
+    WRITE,
+    READ,
+    EXEC,
+    INJECT,
+    CAST,
+
+    EOF, ERROR
 }

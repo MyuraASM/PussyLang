@@ -6,7 +6,7 @@
 A lightweight scripting language designed for **malware development**, **red teaming**, and **low-level systems programming**.
 
 ![Status](https://img.shields.io/badge/Status-Early%20Development-red.svg)
-![Language](https://img.shields.io/badge/Language-Java-blue.svg)
+
 
 ## Features
 

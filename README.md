@@ -6,7 +6,7 @@
 A lightweight scripting language designed for **malware development**, **red teaming**, and **low-level systems programming**.
 
 ![Status](https://img.shields.io/badge/Status-Early%20Development-red.svg)
-![Language](https://img.shields.io/badge/Language-Java-blue.svg)
+
 
 ## Features
 
@@ -45,10 +45,10 @@ free(buf);
 720
 3
 0xDEAD
-[alloc] 4096 bytes @ 0x1CFFF258E90
-[write] 3 bytes → 0x1CFFF258E90
-[exec] shellcode @ 0x1CFFF258E90
-[free] 0x1CFFF258E90
+[alloc] 4096 bytes @ 0x16D0C345B00
+[write] 3 bytes -> 0x16D0C345B00
+[exec] shellcode @ 0x16D0C345B00
+[free] 0x16D0C345B00
 ```
 
 ## Running the Language

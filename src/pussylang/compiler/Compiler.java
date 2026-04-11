@@ -14,32 +14,48 @@ import java.util.List;
 
 import static pussylang.compiler.OpCode.*;
 
-/**
- *  AST ->> bytecode compiler.
- *
- * one Compiler instance script or function.
- * nested functions spawn a fresh Compiler so each gets its own Chunk.
- *
- * stack layout during a function call:
- *   [ ..., callee, arg0, arg1, arg2, local0, local1, ... ]
- *                  ^ frame.base
- * GET_LOCAL 0 -> arg0,  GET_LOCAL 1 -> </></> arg1,  etc.
- */
 public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
 
 
+    private static class Local {
+        final String name;
+        final int depth;
+        boolean captured;
 
-    private record Local(String name, int depth) {}
+        Local(String name, int depth, boolean captured) {
+            this.name = name;
+            this.depth = depth;
+            this.captured = captured;
+        }
+    }
 
-    private final List<Local> locals     = new ArrayList<>();
-    private       int         scopeDepth = 0;
 
+    private static class Upvalue {
+        final int index;
+        final boolean isLocal;
+        Upvalue(int index, boolean isLocal) {
+            this.index = index;
+            this.isLocal = isLocal;
+        }
+    }
 
+    private final Compiler enclosing;
+    private final List<Local> locals = new ArrayList<>();
+    private final List<Upvalue> upvalues = new ArrayList<>();
+    private int scopeDepth = 0;
 
     private Chunk chunk;
-    private int   currentLine = 1;
+    private int currentLine = 1;
 
 
+    public Compiler() {
+        this.enclosing = null;
+    }
+
+
+    private Compiler(Compiler enclosing) {
+        this.enclosing = enclosing;
+    }
 
     /** Compile a toplevel script into a Chunk. */
     public Chunk compileScript(List<Stmt> stmts) {
@@ -49,15 +65,16 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
         return chunk;
     }
 
-    /** Compile a function body into its own Chunk  it is called by visitFunc. */
+    /** Compile a function body into its own Chunk. */
     Chunk compileFunctionBody(FuncStmt func) {
-        chunk      = new Chunk(func.name().lexeme(), func.params().size());
+        chunk = new Chunk(func.name().lexeme(), func.params().size());
         scopeDepth = 1;
         locals.clear();
+        upvalues.clear();
 
-        // Params become like slot 0, 1, 2, etc etc
+        // Parameters become locals at slot 0, 1, 2, etcccc
         for (Token p : func.params()) {
-            locals.add(new Local(p.lexeme(), 1));
+            locals.add(new Local(p.lexeme(), 1, false));
         }
 
         for (Stmt s : func.body()) if (s != null) compileStmt(s);
@@ -65,10 +82,11 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
 
         emit(PUSH_NULL);
         emit(RETURN);
+
+
+        chunk.upvalueCount = upvalues.size();
         return chunk;
     }
-
-
 
     private void compileStmt(Stmt s) { s.accept(this); }
 
@@ -91,14 +109,12 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
         currentLine = s.name().line();
 
         if (s.initializer() != null) compileExpr(s.initializer());
-        else                         emit(PUSH_NULL);
+        else emit(PUSH_NULL);
 
         if (scopeDepth == 0) {
-            // pop value and store in global table
             emitWithByte(DEFINE_GLOBAL, addConstant(s.name().lexeme()));
         } else {
-            //value stays on stack  that stack slot IS the variable
-            locals.add(new Local(s.name().lexeme(), scopeDepth));
+            locals.add(new Local(s.name().lexeme(), scopeDepth, false));
         }
         return null;
     }
@@ -115,42 +131,28 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
     public Void visitIf(IfStmt s) {
         compileExpr(s.condition());
 
-        //  condition
-        //  JUMP_IF_FALSE -> [else]
-        //  POP            (truthy discard condition)
-        //  <then branch>
-        //  JUMP -> [end]
-        // [else]:
-        //  POP            (falsy discard condition)
-        //  <else branch>
-        // [end]:
-
         int thenJump = emitJump(JUMP_IF_FALSE);
-        emit(POP);
         compileStmt(s.thenBranch());
 
-        int elseJump = emitJump(JUMP);
-        patchJump(thenJump);
-        emit(POP);
-
-        if (s.elseBranch() != null) compileStmt(s.elseBranch());
-        patchJump(elseJump);
+        if (s.elseBranch() != null) {
+            int elseJump = emitJump(JUMP);
+            patchJump(thenJump);
+            compileStmt(s.elseBranch());
+            patchJump(elseJump);
+        } else {
+            patchJump(thenJump);
+        }
         return null;
     }
 
     @Override
     public Void visitWhile(WhileStmt s) {
         int loopStart = chunk.currentOffset();
-
         compileExpr(s.condition());
         int exitJump = emitJump(JUMP_IF_FALSE);
-        emit(POP);
-
         compileStmt(s.body());
         emitLoop(loopStart);
-
         patchJump(exitJump);
-        emit(POP);
         return null;
     }
 
@@ -159,13 +161,23 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
         currentLine = s.name().line();
 
 
-        Chunk funcChunk = new Compiler().compileFunctionBody(s);
+        Compiler nested = new Compiler(this);
+        Chunk funcChunk = nested.compileFunctionBody(s);
+
+
         emitWithByte(CLOSURE, addConstant(funcChunk));
+
+
+        for (Upvalue uv : nested.upvalues) {
+            chunk.write((byte) (uv.isLocal ? 1 : 0), currentLine);
+            chunk.write((byte) uv.index, currentLine);
+        }
+
 
         if (scopeDepth == 0) {
             emitWithByte(DEFINE_GLOBAL, addConstant(s.name().lexeme()));
         } else {
-            locals.add(new Local(s.name().lexeme(), scopeDepth));
+            locals.add(new Local(s.name().lexeme(), scopeDepth, false));
         }
         return null;
     }
@@ -174,22 +186,20 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
     public Void visitReturn(ReturnStmt s) {
         currentLine = s.keyword().line();
         if (s.value() != null) compileExpr(s.value());
-        else                   emit(PUSH_NULL);
+        else emit(PUSH_NULL);
         emit(RETURN);
         return null;
     }
-
-
 
     private void compileExpr(Expr e) { e.accept(this); }
 
     @Override
     public Void visitLiteral(LiteralExpr e) {
         Object v = e.value();
-        if      (v == null)         emit(PUSH_NULL);
-        else if (v.equals(true))    emit(PUSH_TRUE);
-        else if (v.equals(false))   emit(PUSH_FALSE);
-        else                        emitWithByte(PUSH_CONST, addConstant(v));
+        if (v == null) emit(PUSH_NULL);
+        else if (v.equals(true)) emit(PUSH_TRUE);
+        else if (v.equals(false)) emit(PUSH_FALSE);
+        else emitWithByte(PUSH_CONST, addConstant(v));
         return null;
     }
 
@@ -208,9 +218,12 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
     @Override
     public Void visitVariable(VariableExpr e) {
         currentLine = e.name().line();
-        int slot = resolveLocal(e.name().lexeme());
-        if (slot >= 0) emitWithByte(GET_LOCAL,  slot);
-        else           emitWithByte(GET_GLOBAL,  addConstant(e.name().lexeme()));
+        VarResolution res = resolveVariable(e.name().lexeme());
+        switch (res.kind) {
+            case LOCAL -> emitWithByte(GET_LOCAL, res.index);
+            case UPVALUE -> emitWithByte(GET_UPVALUE, res.index);
+            case GLOBAL -> emitWithByte(GET_GLOBAL, addConstant(e.name().lexeme()));
+        }
         return null;
     }
 
@@ -218,9 +231,12 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
     public Void visitAssign(AssignExpr e) {
         currentLine = e.name().line();
         compileExpr(e.value());
-        int slot = resolveLocal(e.name().lexeme());
-        if (slot >= 0) emitWithByte(SET_LOCAL,  slot);
-        else           emitWithByte(SET_GLOBAL,  addConstant(e.name().lexeme()));
+        VarResolution res = resolveVariable(e.name().lexeme());
+        switch (res.kind) {
+            case LOCAL -> emitWithByte(SET_LOCAL, res.index);
+            case UPVALUE -> emitWithByte(SET_UPVALUE, res.index);
+            case GLOBAL -> emitWithByte(SET_GLOBAL, addConstant(e.name().lexeme()));
+        }
         return null;
     }
 
@@ -230,8 +246,8 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
         compileExpr(e.right());
         switch (e.operator().type()) {
             case MINUS -> emit(NEGATE);
-            case BANG  -> emit(NOT);
-            default    -> throw new CompileError("Unknown unary op: " + e.operator().type());
+            case BANG -> emit(NOT);
+            default -> throw new CompileError("Unknown unary op: " + e.operator().type());
         }
         return null;
     }
@@ -241,7 +257,6 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
         currentLine = e.operator().line();
         TokenType op = e.operator().type();
 
-        // &&  and  ||  short circuit  issue
         if (op == TokenType.AND_AND) { compileAnd(e); return null; }
         if (op == TokenType.OR_OR)   { compileOr(e);  return null; }
 
@@ -249,38 +264,34 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
         compileExpr(e.right());
 
         switch (op) {
-            case PLUS          -> emit(ADD);
-            case MINUS         -> emit(SUB);
-            case STAR          -> emit(MUL);
-            case SLASH         -> emit(DIV);
-            case PERCENT       -> emit(MOD);
-            case EQUAL_EQUAL   -> emit(EQUAL);
-            case BANG_EQUAL    -> emit(NOT_EQUAL);
-            case LESS          -> emit(LESS);
-            case LESS_EQUAL    -> emit(LESS_EQ);
-            case GREATER       -> emit(GREATER);
+            case PLUS -> emit(ADD);
+            case MINUS -> emit(SUB);
+            case STAR -> emit(MUL);
+            case SLASH -> emit(DIV);
+            case PERCENT -> emit(MOD);
+            case EQUAL_EQUAL -> emit(EQUAL);
+            case BANG_EQUAL -> emit(NOT_EQUAL);
+            case LESS -> emit(LESS);
+            case LESS_EQUAL -> emit(LESS_EQ);
+            case GREATER -> emit(GREATER);
             case GREATER_EQUAL -> emit(GREATER_EQ);
             default -> throw new CompileError("Unknown binary op: " + op);
         }
         return null;
     }
 
-    /** a && b   if a is falsy then leave a on stack and skip b */
     private void compileAnd(BinaryExpr e) {
         compileExpr(e.left());
-        int skipRight = emitJump(JUMP_IF_FALSE);
-        emit(POP);
+        int exitJump = emitJump(JUMP_IF_FALSE);
         compileExpr(e.right());
-        patchJump(skipRight);
+        patchJump(exitJump);
     }
 
-    /** a || b   if a is truthy then leave a on stack and skip b */
     private void compileOr(BinaryExpr e) {
         compileExpr(e.left());
-        int falseJump = emitJump(JUMP_IF_FALSE);
-        int endJump   = emitJump(JUMP);
-        patchJump(falseJump);
-        emit(POP);
+        int elseJump = emitJump(JUMP_IF_FALSE);
+        int endJump = emitJump(JUMP);
+        patchJump(elseJump);
         compileExpr(e.right());
         patchJump(endJump);
     }
@@ -294,59 +305,109 @@ public class Compiler implements ExprVisitor<Void>, StmtVisitor<Void> {
         return null;
     }
 
-
-
     private void beginScope() { scopeDepth++; }
 
     private void endScope() {
         scopeDepth--;
-
-        while (!locals.isEmpty() && locals.getLast().depth() > scopeDepth) {
+        while (!locals.isEmpty() && locals.getLast().depth > scopeDepth) {
+            Local local = locals.removeLast();
+            if (local.captured) {
+                // ... empty for now <3
+            }
             emit(POP);
-            locals.removeLast();
         }
     }
 
-    /** returns stack slot index or -1 if global. */
-    private int resolveLocal(String name) {
+    //VARIABLE RESOLUTIN
+    private enum VarKind { LOCAL, UPVALUE, GLOBAL }
+    private record VarResolution(VarKind kind, int index) {}
+
+    private VarResolution resolveVariable(String name) {
+
+        Integer localIndex = resolveLocalHere(name);
+        if (localIndex != null) {
+            return new VarResolution(VarKind.LOCAL, localIndex);
+        }
+
+        Integer upvalueIndex = resolveUpvalue(name);
+        if (upvalueIndex != null) {
+            return new VarResolution(VarKind.UPVALUE, upvalueIndex);
+        }
+
+        return new VarResolution(VarKind.GLOBAL, -1);
+    }
+
+    private Integer resolveLocalHere(String name) {
         for (int i = locals.size() - 1; i >= 0; i--) {
-            if (locals.get(i).name().equals(name)) return i;
+            if (locals.get(i).name.equals(name)) {
+                return i;
+            }
         }
-        return -1;
+        return null;
+    }
+
+    private Integer resolveUpvalue(String name) {
+        if (enclosing == null) return null;
+
+
+        Integer enclosingLocal = enclosing.resolveLocalHere(name);
+        if (enclosingLocal != null) {
+
+            enclosing.locals.get(enclosingLocal).captured = true;
+
+            return addUpvalue(enclosingLocal, true);
+        }
+
+
+        Integer enclosingUpvalue = enclosing.resolveUpvalue(name);
+        if (enclosingUpvalue != null) {
+            return addUpvalue(enclosingUpvalue, false);
+        }
+
+        return null;
+    }
+
+    private int addUpvalue(int index, boolean isLocal) {
+
+        for (int i = 0; i < upvalues.size(); i++) {
+            Upvalue uv = upvalues.get(i);
+            if (uv.index == index && uv.isLocal == isLocal) {
+                return i;
+            }
+        }
+        upvalues.add(new Upvalue(index, isLocal));
+        return upvalues.size() - 1;
     }
 
 
+    //PCB EMITION HELP
 
     private void emit(OpCode op) {
         chunk.write((byte) op.ordinal(), currentLine);
     }
 
-
     private void emitWithByte(OpCode op, int operand) {
-        if (operand > 0xFF) throw new CompileError("Operand too large (max 255): " + operand);
+        if (operand > 0xFF) throw new CompileError("Operand too large: " + operand);
         emit(op);
         chunk.write((byte) (operand & 0xFF), currentLine);
     }
 
     private int addConstant(Object v) { return chunk.addConstant(v); }
 
-
     private int emitJump(OpCode op) {
         emit(op);
-        chunk.write((byte) 0xFF, currentLine); // hi ph
-        chunk.write((byte) 0xFF, currentLine); // lo ph
+        chunk.write((byte) 0xFF, currentLine);
+        chunk.write((byte) 0xFF, currentLine);
         return chunk.currentOffset() - 2;
     }
 
     private void patchJump(int offset) { chunk.patchJump(offset); }
 
-
     private void emitLoop(int loopStart) {
         emit(LOOP);
-
         int offset = chunk.currentOffset() - loopStart + 2;
         if (offset > 0xFFFF) throw new CompileError("Loop body too large.");
         chunk.write((byte) ((offset >> 8) & 0xFF), currentLine);
-        chunk.write((byte)  (offset        & 0xFF), currentLine);
+        chunk.write((byte) (offset & 0xFF), currentLine);
     }
 }

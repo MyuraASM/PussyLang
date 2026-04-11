@@ -36,32 +36,24 @@ public class Parser {
 
 
     private Stmt declaration() {
-        try {
-            if (match(FUNC)) return funcDeclaration();
-            if (match(VAR))  return varDeclaration();
-            return statement();
-        } catch (ParseException e) {
-            synchronize(); //PANICS!!
-            return null;
-        }
+        if (match(FUNC)) return funcDeclaration();
+        if (match(VAR))  return varDeclaration();
+        return statement();
     }
 
     /** func name(a, b, c) { ... } */
     private Stmt funcDeclaration() {
-        Token name = consume(IDENTIFIER, "Expected function name.");
-        consume(LEFT_PAREN, "Expected '(' after function name.");
-
+        Token name = consume(IDENTIFIER, "Expect function name.");
+        consume(LEFT_PAREN, "Expect '(' after function name.");
         List<Token> params = new ArrayList<>();
         if (!check(RIGHT_PAREN)) {
             do {
-                if (params.size() >= 255)
-                    throw error(peek(), "Can't have more than 255 parameters.");
-                params.add(consume(IDENTIFIER, "Expected parameter name."));
+                if (params.size() >= 255) error(peek(), "Cannot have more than 255 parameters.");
+                params.add(consume(IDENTIFIER, "Expect parameter name."));
             } while (match(COMMA));
         }
-        consume(RIGHT_PAREN, "Expected ')' after parameters.");
-        consume(LEFT_BRACE,  "Expected '{' before function body.");
-
+        consume(RIGHT_PAREN, "Expect ')' after parameters.");
+        consume(LEFT_BRACE, "Expect '{' before function body.");
         List<Stmt> body = block();
         return new FuncStmt(name, params, body);
     }
@@ -82,11 +74,13 @@ public class Parser {
 
 
     private Stmt statement() {
-        if (match(IF))     return ifStatement();
-        if (match(WHILE))  return whileStatement();
-        if (match(PRINT))  return printStatement();
+        if (match(PRINT)) return printStatement();
+        if (match(IF)) return ifStatement();
+        if (match(WHILE)) return whileStatement();
         if (match(RETURN)) return returnStatement();
         if (match(LEFT_BRACE)) return new BlockStmt(block());
+        if (match(FUNC)) return funcDeclaration();
+        if (match(VAR)) return varDeclaration();
         return expressionStatement();
     }
 

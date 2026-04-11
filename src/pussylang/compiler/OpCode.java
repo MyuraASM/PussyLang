@@ -37,6 +37,8 @@ public enum OpCode {
 
 
     CLOSURE,
+    GET_UPVALUE,
+    SET_UPVALUE,
     CALL,
 
 
@@ -45,4 +47,6 @@ public enum OpCode {
 
     RETURN,
     HALT
+
+
 }
